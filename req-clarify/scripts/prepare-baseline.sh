@@ -197,17 +197,17 @@ echo "工作区改动  : ${WT_DIRTY} 处"
 
 if [[ -n "$REUSED_FROM" ]]; then
   echo ""
-  echo "♻ 复用自上一迭代：$REUSED_FROM（BRANCH+COMMIT 一致、MODE=branch，跳过 git archive）"
+  echo "♻ 复用自上一迭代：${REUSED_FROM}（BRANCH+COMMIT 一致、MODE=branch，跳过 git archive）"
 fi
 
 case "$MODE" in
   branch)
     echo ""
-    echo "✔ 基线 = $BRANCH@$COMMIT（分支内容完整覆盖工作区源文件）"
+    echo "✔ 基线 = ${BRANCH}@${COMMIT}（分支内容完整覆盖工作区源文件）"
     ;;
   branch+supplement)
     echo ""
-    echo "⚠ 基线 = $BRANCH@$COMMIT + $SUPPLEMENTED 个未跟踪源文件"
+    echo "⚠ 基线 = ${BRANCH}@${COMMIT} + ${SUPPLEMENTED} 个未跟踪源文件"
     echo "  这些文件在 $BRANCH 里根本没有版本（未被 git 跟踪），"
     echo "  只能取自工作区。**该分支不是完整基线** —— 结论要标注这一点。"
     ;;

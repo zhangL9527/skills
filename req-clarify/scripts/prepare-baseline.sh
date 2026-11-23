@@ -7,12 +7,14 @@
 #       本脚本只认 master / main（可用 --branch 显式覆盖），并把该分支的代码
 #       导出一份**只读副本**，后续所有读取都基于这份副本 —— 不动使用者的工作区。
 #
-# 用法: prepare-baseline.sh <repo路径> <基线目录> [--branch <分支>] [--reuse-from <上一基线目录>] [--label <后端|前端>]
-#   基线目录：副本落在这里（建议 <迭代夹>/.baseline-backend 或 .baseline-frontend）
-#   --reuse-from：指向上一迭代的同名基线目录。若其 .baseline-info 记录的 BRANCH+COMMIT
-#                 与本次目标一致、且 MODE=branch（干净分支基线），则直接 cp -R 其 tree-*
-#                 到新目录，跳过 git archive —— 提交号没变就不重导。
-#   --label：报告标题前缀（如「后端」「前端」），便于区分两份基线。
+# 用法: prepare-baseline.sh <repo路径> [基线根目录] [--branch <分支>] [--label <后端|前端>]
+#   基线根目录：基线快照落在这里。默认 ${TMPDIR:-/tmp}/req-clarify-baseline
+#                —— **不在产物目录里**，产物目录只放 Markdown。
+#   实际路径   ：<基线根目录>/<repo名>/<分支>-<提交>/
+#                内容寻址：同一 (repo, 分支, 提交) 永远落在同一路径 → 自动复用，
+#                不需要显式传参指定"上一迭代的基线目录"。
+#   --branch   ：指定基线分支（默认 master，无则 main）
+#   --label    ：报告标题前缀（如「后端」「前端」），便于区分两份基线。
 #
 # 输出：基线信息报告（stdout），并写入 <基线目录>/.baseline-info
 #
@@ -24,9 +26,8 @@
 set -uo pipefail
 
 REPO="${1:-}"
-BASE_DIR="${2:-}"
+BASE_ROOT="${2:-}"
 BRANCH_OVERRIDE=""
-REUSE_FROM=""
 LABEL=""
 
 # 先吃掉位置参数之后的 flags
@@ -34,14 +35,13 @@ shift 2 2>/dev/null || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --branch) BRANCH_OVERRIDE="${2:-}"; shift 2 ;;
-    --reuse-from) REUSE_FROM="${2:-}"; shift 2 ;;
     --label) LABEL="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
 done
 
-if [[ -z "$REPO" || -z "$BASE_DIR" ]]; then
-  echo "用法: prepare-baseline.sh <repo路径> <基线目录> [--branch <分支>] [--reuse-from <上一基线目录>] [--label <后端|前端>]" >&2
+if [[ -z "$REPO" ]]; then
+  echo "用法: prepare-baseline.sh <repo路径> [基线根目录] [--branch <分支>] [--label <后端|前端>]" >&2
   exit 1
 fi
 if [[ ! -d "$REPO" ]]; then
@@ -49,7 +49,10 @@ if [[ ! -d "$REPO" ]]; then
   exit 1
 fi
 REPO="$(cd "$REPO" && pwd)"
+REPO_NAME="$(basename "$REPO")"
+RAW_LABEL="$LABEL"
 [[ -n "$LABEL" ]] && LABEL="$LABEL · "
+[[ -z "$BASE_ROOT" ]] && BASE_ROOT="${TMPDIR:-/tmp}/req-clarify-baseline"
 
 SRC_EXTS="ts tsx js jsx vue java kt kts go py rb php cs sql xml yaml yml json prisma graphql"
 
@@ -86,29 +89,34 @@ if [[ $IS_GIT -eq 1 ]]; then
   WT_DIRTY="$(git -C "$REPO" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 fi
 
+# ---------- 基线路径：内容寻址 <根>/<repo名>/<分支>-<提交> ----------
+# 同一 (repo, 分支, 提交) 永远落在同一路径 → 自动复用，不需要显式指定"上一迭代的基线目录"。
+SLOT="${BASE_ROOT}/${REPO_NAME}"
+if [[ -n "$BRANCH" ]]; then
+  BASE_DIR="${SLOT}/${BRANCH}-${COMMIT:-nocommits}"
+else
+  BASE_DIR="${SLOT}/worktree"
+fi
 mkdir -p "$BASE_DIR" || { echo "错误: 无法创建 $BASE_DIR" >&2; exit 1; }
 INFO="$BASE_DIR/.baseline-info"
 
-# ---------- 复用判定：--reuse-from 指向的上一迭代同名基线 ----------
-# 仅当：① 本次锁定了分支+提交；② reuse-from 有 .baseline-info 且 BRANCH+COMMIT 一致；
-#       ③ 其 MODE=branch（干净分支基线，无 supplement/未降级工作区）—— 满足时直接 cp 复用。
+# ---------- 复用判定：目标槽位已存在且是干净分支基线 → 直接复用 ----------
+# 仅当：① 本次锁定了分支+提交；② 槽位已有 .baseline-info 且 BRANCH+COMMIT 一致；
+#       ③ 其 MODE=branch（干净分支基线，无 supplement/未降级工作区）。
 REUSED_FROM=""
 REUSE_TREE=""
-if [[ -n "$BRANCH" && -n "$COMMIT" && -n "$REUSE_FROM" && -d "$REUSE_FROM" ]]; then
-  PREV_INFO="$REUSE_FROM/.baseline-info"
-  if [[ -f "$PREV_INFO" ]]; then
-    prev_branch="" prev_commit="" prev_mode=""
-    while IFS='=' read -r k v; do
-      case "$k" in
-        BRANCH) prev_branch="$v" ;;
-        COMMIT) prev_commit="$v" ;;
-        MODE)   prev_mode="$v" ;;
-      esac
-    done < "$PREV_INFO"
-    if [[ "$prev_branch" == "$BRANCH" && "$prev_commit" == "$COMMIT" && "$prev_mode" == "branch" ]]; then
-      # 找到上一基线的 tree-* 目录
-      REUSE_TREE="$(find "$REUSE_FROM" -maxdepth 1 -type d -name 'tree-*' 2>/dev/null | head -n 1)"
-    fi
+if [[ -n "$BRANCH" && -n "$COMMIT" && -f "$INFO" ]]; then
+  prev_branch="" prev_commit="" prev_mode=""
+  while IFS='=' read -r k v; do
+    case "$k" in
+      BRANCH) prev_branch="$v" ;;
+      COMMIT) prev_commit="$v" ;;
+      MODE)   prev_mode="$v" ;;
+    esac
+  done < "$INFO"
+  if [[ "$prev_branch" == "$BRANCH" && "$prev_commit" == "$COMMIT" && "$prev_mode" == "branch" ]]; then
+    REUSE_TREE="$(find "$BASE_DIR" -maxdepth 1 -type d -name 'tree-*' 2>/dev/null | head -n 1)"
+    [[ -n "$REUSE_TREE" ]] && REUSED_FROM="$REUSE_TREE"
   fi
 fi
 
@@ -135,23 +143,27 @@ if [[ -n "$BRANCH" ]]; then
   BASE_TREE="$BASE_DIR/tree-${BRANCH}-${COMMIT:-nocommits}"
 
   if [[ -n "$REUSE_TREE" ]]; then
-    # ---------- 复用：提交号没变，直接拷上一迭代的 tree ----------
-    mkdir -p "$BASE_TREE"
-    cp -R "$REUSE_TREE/." "$BASE_TREE/" 2>/dev/null
+    # ---------- 复用：同一 (repo,分支,提交) 槽位已存在且是干净分支基线 → 直接用 ----------
+    BASE_TREE="$REUSE_TREE"
     FINAL=$(count_src "$BASE_TREE")
     MODE="branch"
-    REUSED_FROM="$REUSE_TREE"
   else
     mkdir -p "$BASE_TREE"
     git -C "$REPO" archive "$BRANCH" 2>/dev/null | tar -x -C "$BASE_TREE" 2>/dev/null
     ARCHIVED=$(count_src "$BASE_TREE")
 
     # 分支没跟踪、但工作区里有的源文件 —— 补进去（这些文件在任何分支里都没有版本）
+    # 【收紧】只补 src/ 下的源文件：文档/图片/临时产物不是"现状"，补进来只会污染基线
     if [[ $IS_GIT -eq 1 && $WT_SRC -gt $ARCHIVED ]]; then
       while IFS= read -r f; do
         rel="${f#"$REPO"/}"
         case "$rel" in
-          node_modules/*|.git/*|*/target/*|*/dist/*|*/build/*|*/vendor/*|*/.next/*|*/coverage/*) continue ;;
+          src/*) ;;                       # 只补 src/ 下的
+          *) continue ;;
+        esac
+        case "$rel" in
+          *.ts|*.tsx|*.js|*.jsx|*.vue|*.java|*.kt|*.kts|*.go|*.py|*.rb|*.php|*.cs|*.sql|*.xml|*.yaml|*.yml|*.json) ;;
+          *) continue ;;
         esac
         mkdir -p "$BASE_TREE/$(dirname "$rel")" 2>/dev/null
         cp "$REPO/$rel" "$BASE_TREE/$rel" 2>/dev/null && SUPPLEMENTED=$((SUPPLEMENTED+1))
@@ -159,7 +171,8 @@ if [[ -n "$BRANCH" ]]; then
     fi
 
     FINAL=$(count_src "$BASE_TREE")
-    if [[ $SUPPLEMENTED -eq 0 && $FINAL -eq $WT_SRC ]]; then
+    # 只要没补任何文件，基线就是纯 master 副本 → 严格基线
+    if [[ $SUPPLEMENTED -eq 0 ]]; then
       MODE="branch"
     else
       MODE="branch+supplement"
@@ -181,6 +194,7 @@ fi
   echo "WORKTREE_DIRTY=$WT_DIRTY"
   echo "SRC_FILES=$FINAL"
   echo "REPO=$REPO"
+  echo "LABEL=${RAW_LABEL:-（无）}"
   echo "REUSED_FROM=${REUSED_FROM:-}"
 } > "$INFO"
 
@@ -197,7 +211,7 @@ echo "工作区改动  : ${WT_DIRTY} 处"
 
 if [[ -n "$REUSED_FROM" ]]; then
   echo ""
-  echo "♻ 复用自上一迭代：${REUSED_FROM}（BRANCH+COMMIT 一致、MODE=branch，跳过 git archive）"
+  echo "♻ 复用已存在的基线槽位（BRANCH+COMMIT 一致、MODE=branch，跳过 git archive）"
 fi
 
 case "$MODE" in
@@ -227,4 +241,7 @@ fi
 
 echo ""
 echo "后续所有读取都基于：$BASE_TREE"
+echo "基线槽位：$BASE_DIR"
+echo "基线根目录：$BASE_ROOT"
+echo "提示：基线在缓存目录，**不在产物目录里** —— 产物目录只放 Markdown。"
 echo "════════════════════════════════════════════════════════════"

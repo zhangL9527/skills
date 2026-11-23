@@ -5,8 +5,8 @@
 #       脚本只负责「找到在哪」，不负责「是不是缺陷」。
 #
 # 用法: survey.sh <基线目录> [输出文件] [--label <后端|前端>]
-#   基线目录：prepare-baseline.sh 产出的基线树（<迭代夹>/.baseline-backend 或 .baseline-frontend
-#             下的 tree-<分支>-<提交>）—— 不要直接指向工作区，否则会读到非 master/main 的代码。
+#   基线目录：prepare-baseline.sh 产出的基线树（<基线根>/<repo名>/<分支>-<提交> 下的
+#             tree-<分支>-<提交>）—— 不要直接指向工作区，否则会读到非 master/main 的代码。
 #   输出文件省略时打印到 stdout
 #   --label：报告标题前缀（如「后端」「前端」），双仓各跑一次时便于区分两份输出。
 #

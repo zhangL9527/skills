@@ -74,9 +74,15 @@ triggers:
 **做法：导出一份只读副本，全程在副本上作业** —— 不切使用者的工作区，不碰他的未提交改动，也不要求他记得切分支。后端、前端各导一份：
 
 ```bash
-bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <后端repo> <迭代夹>/.baseline-backend --label 后端
-bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <前端repo> <迭代夹>/.baseline-frontend --label 前端
+bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <后端repo> [基线根目录] --label 后端
+bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <前端repo> [基线根目录] --label 前端
 ```
+
+`[基线根目录]` 省略时默认 `${TMPDIR:-/tmp}/req-clarify-baseline`。**基线不落在产物目录里** —— 产物目录只放 Markdown，代码快照既不进交付物、也不进版本库。
+
+**实际路径**：`<基线根目录>/<repo名>/<分支>-<提交>/tree-<分支>-<提交>/`
+
+内容寻址 —— 同一 `(repo, 分支, 提交)` 永远落在同一路径，**自动复用**，不需要指定"上一迭代的基线目录"。导出只要 0.2 秒（后端 41MB / 前端 7MB），专门维护一套复用传参机制不值得。
 
 每端各自判断三种情形，**不猜**（两端可能情形不同，比如后端 A、前端 B）：
 
@@ -88,11 +94,7 @@ bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <前端repo> <迭�
 
 **情形 B 常见于"源码没纳入 git 管理"的仓库** —— 例如只提交了后端 `.java`、前端 `.vue`/`.js` 全是未跟踪状态。这种情况下 `git archive` 会把整个前端悄悄丢掉，必须补回来并明确标注。
 
-**提交号没变就复用、不重导**（`--reuse-from <上一迭代同名基线目录>`）：产品改稿重跑时新建一个迭代夹，如果某端的 master/main 提交号与上一迭代一致、且当时是干净分支基线（情形 A），脚本直接 `cp -R` 上一夹的 `tree-*`，跳过 `git archive`。提交号变了或当时是 B/C 情形 → 照常重导。两端各自判断、各自复用，互不影响。
-
-```bash
-bash prepare-baseline.sh <后端repo> <迭代夹>/.baseline-backend --label 后端 --reuse-from <上一夹>/.baseline-backend
-```
+**补入范围已收紧：只补 `src/` 下的源文件**（`.java/.vue/.js/.ts/.xml/.sql/.json` 等）。文档、图片、临时产物（如 `*.puml`、`.playwright-mcp/*.yml`、`img/`）**不是"现状"**，补进来只会污染基线 —— 工作区里这些多半是本地产物，把它们当成主干事实会误导结论。
 
 **分支与提交必须记进所有产物的头部，分两行**：
 - `后端：<路径>@<分支>@<提交>`
@@ -100,7 +102,7 @@ bash prepare-baseline.sh <后端repo> <迭代夹>/.baseline-backend --label 后�
 
 某端缺失则写 `前端：无（本次仅后端）`；情形 C 写成 `后端：<路径>@<工作区现状（无 master/main）>`。
 
-**后续所有读取都指向基线目录，不指向工作区** —— 后端事实指向 `.baseline-backend/tree-*`，前端事实指向 `.baseline-frontend/tree-*`。
+**后续所有读取都指向基线目录，不指向工作区** —— 后端事实指向 `<基线根>/<后端repo名>/<分支>-<提交>/tree-*`，前端事实指向 `<基线根>/<前端repo名>/<分支>-<提交>/tree-*`。
 
 ---
 
@@ -235,14 +237,11 @@ bash prepare-baseline.sh <后端repo> <迭代夹>/.baseline-backend --label 后�
 4. **锁定双代码基线**（见上方「代码基线」）：
 
 ```bash
-# 若存在上一迭代夹（同方案名、N-1），用 --reuse-from 复用其同名基线
-prev_be="<产物目录>/<方案名>迭代$((N-1))>/.baseline-backend"
-prev_fe="<产物目录>/<方案名>迭代$((N-1))>/.baseline-frontend"
-[[ -d "$prev_be" ]] && rf_be="--reuse-from $prev_be" || rf_be=""
-[[ -d "$prev_fe" ]] && rf_fe="--reuse-from $prev_fe" || rf_fe=""
+# 基线落在缓存目录，不进产物目录；同一 (repo, 分支, 提交) 自动复用
+BASELINE_ROOT="${TMPDIR:-/tmp}/req-clarify-baseline"
 
-bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <后端repo> <夹>/.baseline-backend --branch <后端分支> --label 后端 $rf_be
-bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <前端repo> <夹>/.baseline-frontend --branch <前端分支> --label 前端 $rf_fe
+bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <后端repo> "$BASELINE_ROOT" --branch <后端分支> --label 后端
+bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <前端repo> "$BASELINE_ROOT" --branch <前端分支> --label 前端
 ```
 
    逐端读报告，确认三件事：**基线分支 + 提交号**、**基线目录**、**是否有降级情形**。两端各自判断、各自告知：
@@ -259,13 +258,13 @@ bash ~/.claude/skills/req-clarify/scripts/prepare-baseline.sh <前端repo> <夹>
 ### Stage 1 · 代码事实抽取
 按六类事实逐一抽取，**要全集，不要抽样**。每条事实带 `file:line` 证据。
 
-**所有读取都基于 Stage 0 锁定的两份基线目录** —— 不是工作区。后端事实从 `.baseline-backend/tree-*` 取、前端事实从 `.baseline-frontend/tree-*` 取；事实基线里按端分节记录，每条证据标注来源端。
+**所有读取都基于 Stage 0 锁定的两份基线目录** —— 不是工作区。后端事实从 `<基线根>/<后端repo名>/<分支>-<提交>/tree-*` 取、前端事实从 `<基线根>/<前端repo名>/<分支>-<提交>/tree-*` 取；事实基线里按端分节记录，每条证据标注来源端。
 
 建议先跑 `scripts/survey.sh` 做机械线索定位（脚本只定位，判定由你做）—— **双仓各跑一次**：
 
 ```bash
-bash ~/.claude/skills/req-clarify/scripts/survey.sh <夹>/.baseline-backend/tree-* --label 后端
-bash ~/.claude/skills/req-clarify/scripts/survey.sh <夹>/.baseline-frontend/tree-* --label 前端
+bash ~/.claude/skills/req-clarify/scripts/survey.sh <基线根>/<后端repo名>/<分支>-<提交>/tree-* --label 后端
+bash ~/.claude/skills/req-clarify/scripts/survey.sh <基线根>/<前端repo名>/<分支>-<提交>/tree-* --label 前端
 ```
 
 **产物**：`01-代码事实基线.md`（模板 `templates/fact-baseline.md`，头部记后端/前端两行基线分支与提交，正文按端分节）
@@ -326,17 +325,17 @@ bash ~/.claude/skills/req-clarify/scripts/survey.sh <夹>/.baseline-frontend/tre
 
 ```bash
 bash ~/.claude/skills/req-clarify/scripts/verify-citations.sh \
-  --baseline <夹>/.baseline-backend --baseline <夹>/.baseline-frontend \
+  --baseline <基线根>/<后端repo名>/<分支>-<提交> --baseline <基线根>/<前端repo名>/<分支>-<提交> \
   -- 03-澄清问题单.md 01-代码事实基线.md 02-覆盖矩阵.md 02b-七维度扫描底稿.md
 ```
 
-   它会输出每一处引用指向的那一行内容，并标注命中的基线（`[后端]`/`[前端]`）—— **逐行核对语义是否对得上**。
+   它会输出每一处引用指向的那一行内容，并标注命中的基线（`[后端@master-d1b127a03]` 形式，端 + 版本一目了然）—— **逐行核对语义是否对得上**。
    行号有效但指向相邻字段的情况，校验器查不出来，只能靠人眼看预览。只有一端时只传一个 `--baseline`。
 
 3. 在 `04-迭代纪要.md`（模板 `templates/iteration-log.md`）追加本轮记录：提了什么、产品改稿要点、还剩什么
 4. **流程到此暂停并交付** —— 产品**只读**这份问题单，改完方案提交回来
 
-**重跑（产品提交新方案后）**：**新建下一迭代夹**（同方案名、N+1），Stage 0 ~ Stage 4 全部重跑。`04-迭代纪要.md` 从上一夹**复制**后追加本轮；其余产物按新方案版本全新生成。基线用 `--reuse-from` 指向上一夹同名基线，提交号没变就复用、没重导。
+**重跑（产品提交新方案后）**：**新建下一迭代夹**（同方案名、N+1），Stage 0 ~ Stage 4 全部重跑。`04-迭代纪要.md` 从上一夹**复制**后追加本轮；其余产物按新方案版本全新生成。基线按 `(repo, 分支, 提交)` 内容寻址自动复用 —— 提交号没变就是同一个目录，不重导。
 一次改稿常常连带影响别处：新类型的定义变了，七个维度要重扫，矩阵里所有格子也要重看。
 
 **循环直到疑点清单为空。** 高/中级疑点必须清零；低级别疑点允许带默认建议进入路径 B，但要在实现方案的「不做清单」或「边界与异常」里写明。
@@ -443,7 +442,7 @@ AI 遇到空白不会停下，它会继续编。所以**含糊的代价在下游
 ## 红线
 
 - **后端、前端代码库路径都必须由使用者确认。** 默认值是当前终端目录，但**未经确认不生效**，也不能静默沿用。确认时把两条最终路径都回显一遍。两端各自猜错各自毁该端结论。
-- **只从 master / main 取证，双仓各一份。** 开发常忘记切分支，工作区停在 feature 上时，扫出的"现状"是开发中间态，澄清出的缺陷有一半是伪缺陷。**所有代码读取都指向 Stage 0 锁定的两份基线目录，不指向工作区。** 后端/前端基线分支与提交分两行写进每份产物的头部。某端降级到工作区时（无 master/main），**必须在产物里写明「该端证据取自工作区现状」**，不能让读者以为那是主干代码。提交号没变可用 `--reuse-from` 复用上一迭代基线，但降级情形（B/C）不复用。
+- **只从 master / main 取证，双仓各一份。** 开发常忘记切分支，工作区停在 feature 上时，扫出的"现状"是开发中间态，澄清出的缺陷有一半是伪缺陷。**所有代码读取都指向 Stage 0 锁定的两份基线目录，不指向工作区。** 后端/前端基线分支与提交分两行写进每份产物的头部。某端降级到工作区时（无 master/main），**必须在产物里写明「该端证据取自工作区现状」**，不能让读者以为那是主干代码。提交号没变就是同一个基线槽位，自动复用；降级情形（B/C）不复用。
 - **作用域外的代码事实不上报。** 一个老模块的字段缺口和产品本次需求无关，混进去会毁掉问题单的可信度。判定规则见 `references/checkers.md`。
 - **不替产品做决策。** 只列可选解读 + 标注建议默认值，最终由产品**改方案**来定。决策权归属错了，澄清就变成了"开发替产品写需求"。
 - **问题单里不给技术方案。** 问题单讲"业务上这里该是什么"，不讲"建议这么改代码"。除非该技术选择直接影响业务语义（如过滤时机影响数据正确性）。
@@ -476,8 +475,6 @@ AI 遇到空白不会停下，它会继续编。所以**含糊的代价在下游
 ```
 <out>/                                       # = <当前终端目录>/req-clarify-out/
 ├── <方案名>迭代1/
-│   ├── .baseline-backend/                  # 后端 master/main 只读副本（提交号没变则从上一迭代复用）← 可删
-│   ├── .baseline-frontend/                 # 前端 master/main 只读副本（同上）← 可删
 │   ├── 原始资料/
 │   │   ├── 方案文档.<ext>                  # 本次方案原文副本 —— 自包含追溯
 │   │   ├── 原型/                           # 方案引用的截图/mockup/Figma 导出
@@ -495,9 +492,9 @@ AI 遇到空白不会停下，它会继续编。所以**含糊的代价在下游
 └── …
 ```
 
-全部是 Markdown（`.baseline-*/` 是代码副本）。
+**产物目录里只有 Markdown。** 代码基线快照落在缓存目录 `<基线根>/<repo名>/<分支>-<提交>/`（默认 `${TMPDIR:-/tmp}/req-clarify-baseline`），不进交付物、不进版本库。
 
-**产品只读 `03`（或 `05`）。** `00` / `01` / `02` / `02b` / `04` / `原始资料/` / `.baseline-*/` 是工作稿与原料 —— 给开发和追溯看，不发给产品。
+**产品只读 `03`（或 `05`）。** `00` / `01` / `02` / `02b` / `04` / `原始资料/` 是工作稿与原料 —— 给开发和追溯看，不发给产品。
 
 **`03` 与 `05` 二选一，不会同时存在。**
 
@@ -513,7 +510,7 @@ AI 遇到空白不会停下，它会继续编。所以**含糊的代价在下游
 
 | 脚本 | 用途 |
 |---|---|
-| `scripts/prepare-baseline.sh` | **先跑这个**：锁定 master/main 分支、导出只读副本、报告基线完整性与降级情形；支持 `--label <后端\|前端>` 区分两端、`--reuse-from <上一基线>` 在提交号没变时复用跳过 archive |
+| `scripts/prepare-baseline.sh` | **先跑这个**：锁定 master/main 分支、导出只读副本到基线根目录（默认 `${TMPDIR:-/tmp}/req-clarify-baseline`，**不在产物目录里**）、报告基线完整性与降级情形；按 `(repo, 分支, 提交)` 内容寻址自动复用；支持 `--label <后端\|前端>` 区分两端 |
 | `scripts/survey.sh` | 机械定位六类代码事实的候选位置（`file:line` 线索）—— 传入**基线目录**（双仓各跑一次，`--label` 区分） |
 | `scripts/verify-citations.sh` | 校验产物里每处 `file:line` 引用是否真实存在、打印所指行内容并标注命中基线 —— `--baseline <dir> [--baseline <dir>] -- <文档...>`（双仓各传一个） |
 

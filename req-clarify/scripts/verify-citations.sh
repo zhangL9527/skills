@@ -5,10 +5,10 @@
 #       澄清问题单的价值全靠代码证据支撑 —— 引用失效，问题上产品就答不准。
 #
 # 用法: verify-citations.sh --baseline <基线目录> [--baseline <基线目录>] -- <文档文件...>
-#   基线目录：prepare-baseline.sh 产出的基线树（<迭代夹>/.baseline-backend 或 .baseline-frontend
-#             下的 tree-<分支>-<提交>）—— 校验必须对着**出证据时那份代码**，否则工作区一换分支就全是误报。
-#   支持多份基线：前后端双仓时各传一个 --baseline，引用在所有基线里搜，命中后标注 [后端]/[前端]
-#                 （标签取自该基线 .baseline-info 所在目录名 .baseline-backend / .baseline-frontend）。
+#   基线目录：prepare-baseline.sh 产出的基线树（<基线根>/<repo名>/<分支>-<提交> 下的
+#             tree-<分支>-<提交>）—— 校验必须对着**出证据时那份代码**，否则工作区一换分支就全是误报。
+#   支持多份基线：前后端双仓时各传一个 --baseline，引用在所有基线里搜，命中后标注
+#                 [后端@master-d1b127a03] 形式（端 + 版本，取自 .baseline-info 的 LABEL + 槽位目录名）。
 #
 # 输出：
 #   OK          引用有效
@@ -46,7 +46,7 @@ if [[ ${#BASELINES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-# 规范化基线目录：若传的是 .baseline-backend 这一层（含 .baseline-info 但无 tree-*），
+# 规范化基线目录：若传的是基线槽位这一层（含 .baseline-info 但无 tree-*），
 # 自动下沉到其中的 tree-* 目录。
 NORMALIZED_BASELINES=()
 BASEINFO_PATHS=()
@@ -76,15 +76,23 @@ if [[ ${#DOCS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-# 给每个基线一个标签：取 .baseline-* 目录名（后端/前端）
+# 给每个基线一个标签：优先读 .baseline-info 里的 LABEL（后端/前端），
+# 拼上槽位目录名（<分支>-<提交>）→ 「后端@master-d1b127a03」，一眼看出证据端 + 版本
 label_for() {
-  local info="$1" base_parent
+  local info="$1" base_parent slot raw
   base_parent="$(dirname "$info")"
-  case "$(basename "$base_parent")" in
-    .baseline-backend)  printf '后端' ;;
-    .baseline-frontend) printf '前端' ;;
-    *) printf '%s' "$(basename "$base_parent")" ;;
-  esac
+  slot="$(basename "$base_parent")"
+  raw=""
+  if [[ -f "$info" ]]; then
+    while IFS='=' read -r k v; do
+      [[ "$k" == "LABEL" ]] && raw="$v"
+    done < "$info"
+  fi
+  if [[ -n "$raw" && "$raw" != "（无）" ]]; then
+    printf '%s@%s' "$raw" "$slot"
+  else
+    printf '%s' "$slot"
+  fi
 }
 
 CITE_RE='[A-Za-z0-9_][A-Za-z0-9_./-]*\.(ts|tsx|js|jsx|vue|java|kt|kts|go|py|rb|php|cs|sql|xml|yaml|yml|json|md):[0-9]+'

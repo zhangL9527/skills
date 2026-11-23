@@ -55,8 +55,8 @@
    ├─▶ 确定迭代夹：<产物目录>/<方案名>迭代<N>/（N 取已有最大号+1）
    ├─▶ 原始资料落盘：方案原文 + 引用的原型/截图 → 夹内 原始资料/
    ├─▶ Stage 0 输入解析 + 双基线锁定 ─▶ 00-方案解析.md
-   │        ├ prepare-baseline.sh 后端 → .baseline-backend（提交号没变则从上一夹复用）
-   │        └ prepare-baseline.sh 前端 → .baseline-frontend（同上）
+   │        ├ prepare-baseline.sh 后端 → <基线根>/<后端repo名>/<分支>-<提交>（不在产物目录里）
+   │        └ prepare-baseline.sh 前端 → <基线根>/<前端repo名>/<分支>-<提交>（同上）
    ├─▶ Stage 1 事实抽取（双仓各 survey 一次）─▶ 01-代码事实基线.md
    ├─▶ Stage 2 七维度扫描
    ├─▶ Stage 3 覆盖矩阵 ─▶ 02-覆盖矩阵.md
